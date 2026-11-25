@@ -1,0 +1,353 @@
+# Grafana Unified Alerting rules for VMware Avi Load Balancer.
+# Drop into /etc/grafana/provisioning/alerting/ and verify datasourceUid matches
+# your Prometheus datasource UID (default 'prometheus' matches grafana/provisioning/datasources/prometheus.yml).
+# Rules are instance-agnostic and automatically cover all Avi Controllers scraped by Prometheus.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: Avi Load Balancer
+    folder: Avi Load Balancer
+    interval: 1m
+    rules:
+      - uid: avi-scrape-down
+        title: Avi Metrics Scrape Down
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'up{job=~"avi_.*"}'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 3m
+        annotations:
+          summary: 'Avi Prometheus target {{ $labels.job }} ({{ $labels.instance }}) is DOWN'
+          description: 'Cannot scrape Avi metrics ({{ $labels.job }}) from {{ $labels.instance }} via avi-exporter for over 3 minutes.'
+        labels:
+          severity: warning
+          domain: avi
+
+      - uid: avi-vs-oper-down
+        title: Avi Virtual Service Operational Status DOWN
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'avi_vs_oper_status{type="virtualservice"}'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: 'Avi Virtual Service {{ $labels.name }} ({{ $labels.instance }}) is {{ $labels.state }}'
+          description: 'Virtual Service {{ $labels.name }} on {{ $labels.instance }} (tenant {{ $labels.tenant }}) is no longer OPER_UP.'
+        labels:
+          severity: critical
+          domain: avi
+
+      - uid: avi-vs-health-degraded
+        title: Avi Virtual Service Health Degraded (<80)
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'avi_healthscore_health_score_value{type="virtualservice"}'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { type: lt, params: [80] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Avi VS {{ $labels.name }} healthscore dropped to {{ printf "%.0f" $values.A.Value }}'
+          description: 'Virtual Service {{ $labels.name }} on {{ $labels.instance }} has healthscore below 80 for 2 minutes.'
+        labels:
+          severity: critical
+          domain: avi
+
+      - uid: avi-pool-server-down
+        title: Avi Pool Backend Server Down
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'avi_l4_server_avg_server_uptime{type="pool"}'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { type: lt, params: [100] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Avi Pool {{ $labels.name }} server {{ $labels.server }} uptime {{ printf "%.0f" $values.A.Value }}%'
+          description: 'Backend server {{ $labels.server }} in pool {{ $labels.name }} on {{ $labels.instance }} dropped below 100% uptime.'
+        labels:
+          severity: critical
+          domain: avi
+
+      - uid: avi-no-healthy-se
+        title: Avi No Healthy Service Engine Available
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'count by (instance) (avi_healthscore_health_score_value{type="serviceengine"} >= 80) or vector(0)'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 2m
+        annotations:
+          summary: 'Avi controller {{ $labels.instance }} has ZERO healthy Service Engines'
+          description: 'No Avi Service Engine has healthscore >= 80. Virtual Services are at risk.'
+        labels:
+          severity: critical
+          domain: avi
+
+      - uid: avi-se-health-degraded
+        title: Avi Service Engine Health Degraded (<80)
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'avi_healthscore_health_score_value{type="serviceengine"}'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { type: lt, params: [80] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: 'Avi Service Engine {{ $labels.name }} healthscore is {{ printf "%.0f" $values.A.Value }}'
+          description: 'Service Engine {{ $labels.name }} on {{ $labels.instance }} has healthscore below 80 for 5 minutes.'
+        labels:
+          severity: warning
+          domain: avi
+
+      - uid: avi-se-mem-high
+        title: Avi Service Engine Memory High (>85%)
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'max by (instance, name) (avi_se_stats_avg_mem_usage{type="serviceengine"} or avi_se_stats_avg_connection_mem_usage{type="serviceengine"})'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { type: gt, params: [85] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: 'Avi SE {{ $labels.name }} memory is {{ printf "%.1f" $values.A.Value }}%'
+          description: 'Service Engine {{ $labels.name }} on {{ $labels.instance }} memory or connection memory exceeded 85% for 10 minutes.'
+        labels:
+          severity: warning
+          domain: avi
+
+      - uid: avi-se-pps-spike
+        title: Avi Service Engine Combined PPS Anomaly
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'avi_se_total_pps{type="serviceengine"}'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                # Tune this threshold to your Service Engine sizing baseline
+                - evaluator: { type: gt, params: [50000] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: 'Avi SE {{ $labels.name }} combined PPS is {{ printf "%.0f" $values.A.Value }} pps'
+          description: 'Total combined RX+TX packet rate across all NICs on SE {{ $labels.name }} ({{ $labels.instance }}) exceeded baseline threshold for 10 minutes.'
+        labels:
+          severity: warning
+          domain: avi
+
+      - uid: avi-dns-errors
+        title: Avi DNS VS Error Spike (>5/s)
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'avi_dns_client_avg_errored_queries{type="virtualservice"}'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { type: gt, params: [5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: 'Avi DNS VS {{ $labels.name }} errored queries {{ printf "%.1f" $values.A.Value }}/s'
+          description: 'DNS Virtual Service {{ $labels.name }} on {{ $labels.instance }} exceeded 5 errored queries/sec for 5 minutes.'
+        labels:
+          severity: warning
+          domain: avi
+
+      - uid: avi-license-high
+        title: Avi License Service Cores Usage High (>90%)
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'avi_license_cores_used_percent'
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { type: gt, params: [90] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        annotations:
+          summary: 'Avi license core usage is {{ printf "%.0f" $values.A.Value }}% ({{ $labels.tier }})'
+          description: 'Consumed Avi service cores on {{ $labels.instance }} exceeded 90% of available licensed cores.'
+        labels:
+          severity: warning
+          domain: avi

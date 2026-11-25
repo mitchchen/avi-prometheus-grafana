@@ -1,0 +1,162 @@
+# Example Kubernetes manifests for deploying avi-exporter alongside kube-prometheus-stack.
+# Before applying:
+#   1. Create the secret with a dedicated read-only Avi user:
+#      kubectl -n monitoring create secret generic avi-exporter-creds \
+#        --from-literal=AVI_USERNAME=monitoring-ro \
+#        --from-literal=AVI_PASSWORD='<read-only-password>'
+#   2. Put avi_exporter.py and your enterprise CA into ConfigMaps:
+#      kubectl -n monitoring create configmap avi-exporter-code --from-file=avi_exporter.py=exporters/avi_exporter.py
+#      kubectl -n monitoring create configmap corp-root-ca --from-file=corp-root-ca.pem=/path/to/corp-root-ca.pem
+#   3. Update AVI_CONTROLLER, AVI_API_VERSION, and replacement instance label below.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: avi-exporter
+  namespace: monitoring
+  labels:
+    app: avi-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: avi-exporter
+  template:
+    metadata:
+      labels:
+        app: avi-exporter
+    spec:
+      containers:
+        - name: avi-exporter
+          image: python:3.12-alpine
+          command: ["python3", "/app/avi_exporter.py"]
+          ports:
+            - name: metrics
+              containerPort: 9103
+          envFrom:
+            - secretRef:
+                name: avi-exporter-creds
+          env:
+            - name: AVI_CONTROLLER
+              value: "avi-ctrl.corp.example"
+            - name: AVI_API_VERSION
+              value: "32.1.4"
+            - name: AVI_TENANT
+              value: "admin"
+            - name: AVI_CA_FILE
+              value: "/etc/ssl/certs/corp-root-ca.pem"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: code
+              mountPath: /app
+              readOnly: true
+            - name: ca
+              mountPath: /etc/ssl/certs/corp-root-ca.pem
+              subPath: corp-root-ca.pem
+              readOnly: true
+      volumes:
+        - name: code
+          configMap:
+            name: avi-exporter-code
+        - name: ca
+          configMap:
+            name: corp-root-ca
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: avi-exporter
+  namespace: monitoring
+  labels:
+    app: avi-exporter
+spec:
+  type: ClusterIP
+  selector:
+    app: avi-exporter
+  ports:
+    - name: metrics
+      port: 9103
+      targetPort: metrics
+---
+# Requires Prometheus Operator CRDs (kube-prometheus-stack).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: avi-exporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: avi-exporter
+  endpoints:
+    - port: metrics
+      path: /metrics/controller
+      interval: 1m
+      scrapeTimeout: 45s
+      metricRelabelings:
+        - sourceLabels: [instance]
+          targetLabel: instance
+          replacement: avi-prod-west
+    - port: metrics
+      path: /metrics/serviceengine
+      params: { tenant: ["admin"] }
+      interval: 1m
+      scrapeTimeout: 45s
+      metricRelabelings:
+        - sourceLabels: [instance]
+          targetLabel: instance
+          replacement: avi-prod-west
+    - port: metrics
+      path: /metrics/serviceengine_interfaces
+      params: { tenant: ["admin"] }
+      interval: 1m
+      scrapeTimeout: 45s
+      metricRelabelings:
+        - sourceLabels: [instance]
+          targetLabel: instance
+          replacement: avi-prod-west
+    - port: metrics
+      path: /metrics/inventory
+      params: { tenant: ["admin"] }
+      interval: 1m
+      scrapeTimeout: 45s
+      metricRelabelings:
+        - sourceLabels: [instance]
+          targetLabel: instance
+          replacement: avi-prod-west
+    - port: metrics
+      path: /metrics/virtualservice
+      params: { tenant: ["admin"] }
+      interval: 1m
+      scrapeTimeout: 45s
+      metricRelabelings:
+        - sourceLabels: [instance]
+          targetLabel: instance
+          replacement: avi-prod-west
+    - port: metrics
+      path: /metrics/pool
+      params: { tenant: ["admin"] }
+      interval: 1m
+      scrapeTimeout: 45s
+      metricRelabelings:
+        - sourceLabels: [instance]
+          targetLabel: instance
+          replacement: avi-prod-west

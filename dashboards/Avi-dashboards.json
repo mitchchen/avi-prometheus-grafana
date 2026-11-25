@@ -1,0 +1,64 @@
+{
+  "uid": "avi-dashboards",
+  "title": "Avi Dashboards",
+  "tags": [
+    "avi",
+    "load-balancer"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [
+    {
+      "title": "Avi Dashboards",
+      "type": "dashboards",
+      "tags": [
+        "avi"
+      ],
+      "asDropdown": true,
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "dashlist",
+      "title": "VMware Avi Load Balancer Dashboards",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "keepTime": true,
+        "includeVars": false,
+        "showStarred": false,
+        "showRecentlyViewed": false,
+        "showSearch": true,
+        "showHeadings": true,
+        "maxItems": 20,
+        "query": "",
+        "tags": [
+          "avi"
+        ]
+      }
+    }
+  ]
+}

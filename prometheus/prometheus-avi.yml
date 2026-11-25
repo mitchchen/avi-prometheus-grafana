@@ -1,0 +1,104 @@
+# Prometheus scrape configuration for VMware Avi Load Balancer via avi-exporter.
+# Replace 'avi-prod-west' with a friendly name for your Avi Controller cluster.
+# To monitor additional tenants on the same controller, duplicate the tenant-scoped
+# jobs with different params.tenant values (e.g. ['app-team-a']).
+# To monitor multiple Avi Controllers, run one avi-exporter container per controller.
+
+global:
+  scrape_interval: 1m
+  evaluation_interval: 1m
+
+scrape_configs:
+  - job_name: 'avi_controller'
+    honor_timestamps: true
+    scrape_interval: 1m
+    scrape_timeout: 45s
+    metrics_path: /metrics/controller
+    metric_relabel_configs:
+      - source_labels: [instance]
+        regex: '(.*)'
+        target_label: instance
+        replacement: 'avi-prod-west'
+        action: replace
+    static_configs:
+      - targets: ['avi-exporter:9103']
+
+  - job_name: 'avi_serviceengine'
+    honor_timestamps: true
+    scrape_interval: 1m
+    scrape_timeout: 45s
+    metrics_path: /metrics/serviceengine
+    params:
+      tenant: ['admin']
+    metric_relabel_configs:
+      - source_labels: [instance]
+        regex: '(.*)'
+        target_label: instance
+        replacement: 'avi-prod-west'
+        action: replace
+    static_configs:
+      - targets: ['avi-exporter:9103']
+
+  - job_name: 'avi_serviceengine_interfaces'
+    honor_timestamps: true
+    scrape_interval: 1m
+    scrape_timeout: 45s
+    metrics_path: /metrics/serviceengine_interfaces
+    params:
+      tenant: ['admin']
+    metric_relabel_configs:
+      - source_labels: [instance]
+        regex: '(.*)'
+        target_label: instance
+        replacement: 'avi-prod-west'
+        action: replace
+    static_configs:
+      - targets: ['avi-exporter:9103']
+
+  - job_name: 'avi_inventory'
+    honor_timestamps: true
+    scrape_interval: 1m
+    scrape_timeout: 45s
+    metrics_path: /metrics/inventory
+    params:
+      tenant: ['admin']
+    metric_relabel_configs:
+      - source_labels: [instance]
+        regex: '(.*)'
+        target_label: instance
+        replacement: 'avi-prod-west'
+        action: replace
+    static_configs:
+      - targets: ['avi-exporter:9103']
+
+  - job_name: 'avi_virtualservice'
+    honor_timestamps: true
+    scrape_interval: 1m
+    scrape_timeout: 45s
+    metrics_path: /metrics/virtualservice
+    params:
+      tenant: ['admin']
+    metric_relabel_configs:
+      - source_labels: [instance]
+        regex: '(.*)'
+        target_label: instance
+        replacement: 'avi-prod-west'
+        action: replace
+    static_configs:
+      - targets: ['avi-exporter:9103']
+
+  - job_name: 'avi_pool'
+    honor_timestamps: true
+    scrape_interval: 1m
+    scrape_timeout: 45s
+    metrics_path: /metrics/pool
+    params:
+      tenant: ['admin']
+    metric_relabel_configs:
+      - source_labels: [instance]
+        regex: '(.*)'
+        target_label: instance
+        replacement: 'avi-prod-west'
+        action: replace
+    static_configs:
+      - targets: ['avi-exporter:9103']

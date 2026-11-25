@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: 'Avi Load Balancer'
+    orgId: 1
+    folder: 'Avi Load Balancer'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards-avi
