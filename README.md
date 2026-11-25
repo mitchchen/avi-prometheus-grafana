@@ -6,7 +6,7 @@ An agentless, strictly read-only observability kit for **VMware Avi Load Balance
 - **Complete 6-Job Telemetry Coverage:** Native Avi Prometheus analytics + **per-interface multi-NIC Service Engine PPS/bandwidth** (`eth0`, `eth1`, ..., plus SE-wide totals) + **full runtime & inventory state** (`OPER_UP`/`OPER_DOWN`, missed SE heartbeats, VS-to-SE placement, licensed service cores %, pool member counts, and active controller alerts).
 - **9 Modern Grafana 11–13 Dashboards (`dashboards/*.json`):** Native `schemaVersion: 41` dashboards (no deprecated Angular `singlestat`/`graph` plugins), dynamic `${datasource}` Prometheus selector (works on both 1-click UI Import and GitOps file provisioning), click-to-drill-down navigation, and collapsible L7/SSL/WAF rows.
 - **10 Proactive Grafana Unified Alert Rules (`alerting/avi-alert-rules.yml`):** Ready-to-provision SLO and capacity rules across Virtual Services, Pools, Service Engines, Licensing, and Scrape Health.
-- **Reference Architecture Guide PDF (`docs/VMware-Avi-Load-Balancer-Prometheus-Grafana-Architecture-Guide.pdf`):** Customer-ready architecture guide with vector data-flow & sequence diagrams.
+- **Reference Architecture Guide PDF (`docs/VMware-Avi-Load-Balancer-Prometheus-Grafana-Architecture-Guide.pdf`):** Customer-ready 7-page architecture guide with vector data-flow & sequence diagrams.
 
 ---
 
@@ -15,15 +15,15 @@ An agentless, strictly read-only observability kit for **VMware Avi Load Balance
 ```mermaid
 flowchart LR
     subgraph Avi["VMware Avi Load Balancer (Zero Agents)"]
-        SE["Service Engines (SE1..SEn)<br/>Multi-NIC Data Plane"]
-        CTRL["Avi Controller Cluster (:443)<br/>1. Native Prometheus Analytics<br/>2. Per-NIC SE Analytics (obj_id=*)<br/>3. Runtime & Inventory REST"]
+        SE["Service Engines (SE1..SEn) — Multi-NIC Data Plane"]
+        CTRL["Avi Controller Cluster (:443) — Native Prom + Per-NIC + Inventory"]
         SE --> CTRL
     end
 
     subgraph Stack["Monitoring Stack (Private Network)"]
-        EXP["avi-exporter (:9103)<br/>Strictly GET-Only · TLS CA Verified<br/>20s Cache · Cookie Auto-Refresh"]
-        PROM["Prometheus TSDB (:9090)<br/>6 Modular Jobs · 1m Scrape"]
-        GRAF["Grafana 11-13 (:3000)<br/>9 Native Dashboards + Unified Alerting"]
+        EXP["avi-exporter (:9103) — GET-Only, TLS Verified, 20s Cache"]
+        PROM["Prometheus TSDB (:9090) — 6 Modular Jobs (1m)"]
+        GRAF["Grafana 11-13 (:3000) — 9 Dashboards + Unified Alerting"]
         PROM -->|"GET /metrics/* (1m)"| EXP
         GRAF -->|"PromQL"| PROM
     end
@@ -48,6 +48,183 @@ flowchart LR
 
 ---
 
+## Quick Start (Docker Compose — Step-by-Step)
+
+This launches the complete stack (`avi-exporter` + `prometheus` + `grafana` with all 9 Avi dashboards and 10 alert rules auto-provisioned) in ~5 minutes.
+
+### Prerequisites
+- A Linux or macOS host with **Docker** and **Docker Compose v2** (`docker compose version`).
+- Outbound HTTPS (**TCP 443**) from the Docker host to your Avi Controller management VIP/FQDN.
+- Your Avi Controller version (shown in the Avi UI top-right menu, or check via `curl -sk https://<your-controller>/api/initial-data | grep -o '"Version": "[^"]*"'`).
+
+---
+
+### Step 1 — Create a Dedicated Read-Only User in the Avi Controller UI
+
+Never use the full `admin` account in production. Create a least-privilege read-only user in your Avi Controller:
+
+1. Log into the Avi Controller UI and navigate to **Administration → Accounts → Users → Create**.
+2. Configure the user:
+   - **Username:** `prometheus-ro` (or your preferred service account name)
+   - **Password:** Set a strong password (you will place this in `secrets/avi-exporter.env` in Step 2)
+   - **Role:** **`System-Read-Access`** *(built-in read-only role across the Controller — required so all 6 scrape jobs, including cluster runtime, licensing ledger, Service Engines, Virtual Services, Pools, and Controller alerts, succeed with zero write permission)*
+   - **Tenant:** `admin` *(or **All Tenants** if you plan to scrape multiple Avi tenants from this exporter)*
+3. Click **Save**.
+
+---
+
+### Step 2 — Clone the Repo & Create `secrets/avi-exporter.env`
+
+`secrets/` holds your Avi read-only credentials outside of `docker-compose.example.yml` so passwords are never committed to Git (`secrets/` is already listed in `.gitignore`).
+
+```bash
+git clone https://github.com/mitchchen/avi-prometheus-grafana.git
+cd avi-prometheus-grafana
+
+# Create the local secrets/ and certs/ directories
+mkdir -p secrets certs
+
+# Copy the template and restrict permissions to owner read/write only
+cp .env.example secrets/avi-exporter.env
+chmod 600 secrets/avi-exporter.env
+```
+
+Now edit `secrets/avi-exporter.env` with your text editor (`nano secrets/avi-exporter.env` or `vi secrets/avi-exporter.env`) so it contains **only** these two lines with the read-only credentials from Step 1:
+
+```env
+AVI_USERNAME=prometheus-ro
+AVI_PASSWORD=YourStrongReadOnlyPasswordHere
+```
+
+> **Important Docker Compose tip:** Do **not** wrap the username or password in quotes (`"..."` or `'...'`). Docker Compose `env_file:` passes quotes literally as part of the password, which causes Avi `POST /login` to return HTTP `401`.
+
+---
+
+### Step 3 — Configure the Avi Controller TLS Certificate (`certs/`)
+
+`avi-exporter` enforces full HTTPS certificate verification against your Avi Controller—it never disables TLS verification. Choose **one** of the three options below matching how your Avi Controller's portal certificate is signed:
+
+#### Option A — Enterprise / Internal CA-Signed Portal Certificate *(Most Common in Production)*
+Copy your organization's PEM-encoded **Root CA** certificate (and Intermediate CA, if applicable, concatenated into one PEM file starting with `-----BEGIN CERTIFICATE-----`) into `certs/corp-root-ca.pem`:
+
+```bash
+cp /path/to/your-enterprise-root-ca.pem certs/corp-root-ca.pem
+```
+
+Verify the trust chain from the Docker host before starting containers (replace `avi-ctrl.corp.example` with your Controller FQDN):
+
+```bash
+openssl s_client -connect avi-ctrl.corp.example:443 \
+  -CAfile certs/corp-root-ca.pem -verify_return_error </dev/null >/dev/null && echo "TLS OK"
+```
+
+#### Option B — Avi Default Self-Signed Certificate *(Lab / PoC)*
+Export the Avi Controller's portal certificate directly into `certs/corp-root-ca.pem` so `avi-exporter` pins and verifies it cleanly:
+
+```bash
+openssl s_client -showcerts -connect avi-ctrl.corp.example:443 </dev/null 2>/dev/null \
+  | openssl x509 -outform PEM > certs/corp-root-ca.pem
+```
+
+> **Note:** Python TLS verifies both the certificate and the hostname/IP SAN. Make sure `AVI_CONTROLLER` in Step 4 matches a DNS name or IP listed in the certificate's Subject Alternative Name (`SAN`).
+
+#### Option C — Publicly Trusted CA Certificate *(DigiCert, Sectigo, Let's Encrypt, etc.)*
+Nothing is needed in `certs/`! Simply remove or comment out these two lines in `docker-compose.example.yml`:
+- `- AVI_CA_FILE=/etc/ssl/certs/corp-root-ca.pem`
+- `- ./certs/corp-root-ca.pem:/etc/ssl/certs/corp-root-ca.pem:ro`
+
+When `AVI_CA_FILE` is unset, `avi_exporter.py` automatically validates TLS using the container's standard OS CA trust store.
+
+---
+
+### Step 4 — Set Your Controller Address, API Version, and Friendly Label
+
+You only need to update **two files** before starting the stack:
+
+1. **`docker-compose.example.yml`** — under `services.avi-exporter.environment`, set your real Avi Controller FQDN/IP and software version:
+   ```yaml
+   environment:
+     - AVI_CONTROLLER=avi-ctrl.corp.example      # Replace with your Controller FQDN or IP
+     - AVI_API_VERSION=32.1.4                    # Replace with your Avi version (e.g. 30.2.1, 31.2.1, 32.1.4)
+     - AVI_TENANT=admin                          # Default Avi tenant
+     - AVI_CA_FILE=/etc/ssl/certs/corp-root-ca.pem  # Remove this + certs mount if using Option C (public CA)
+   ```
+   *(Also change `GF_SECURITY_ADMIN_PASSWORD=admin` under `services.grafana.environment` before exposing Grafana on a shared network.)*
+
+2. **`prometheus/prometheus-avi.yml`** — replace `avi-prod-west` with a friendly label for your Avi Controller cluster (this label populates Grafana's **Controller** dropdown):
+   ```bash
+   # Works on both macOS and Linux (replace 'avi-us-east-prod' with your cluster name)
+   sed -i.bak 's/avi-prod-west/avi-us-east-prod/g' prometheus/prometheus-avi.yml && rm -f prometheus/prometheus-avi.yml.bak
+   ```
+
+---
+
+### Step 5 — Launch and Verify End-to-End
+
+Start all three containers in the background:
+
+```bash
+docker compose -f docker-compose.example.yml up -d
+docker compose -f docker-compose.example.yml ps
+```
+
+**1. Test `avi-exporter` connectivity, login, and TLS directly (takes 2 seconds):**
+
+```bash
+# Liveness check -> should print "ok"
+docker compose -f docker-compose.example.yml exec avi-exporter \
+  wget -qO- http://localhost:9103/healthz
+
+# Live Avi Controller scrape test -> should print avi_controller_version_info & inventory gauges
+docker compose -f docker-compose.example.yml exec avi-exporter \
+  wget -qO- 'http://localhost:9103/metrics/inventory?tenant=admin' | head -n 25
+```
+
+If this returns a `502` error, run `docker compose -f docker-compose.example.yml logs avi-exporter` for the exact reason (see Troubleshooting below).
+
+**2. Confirm all 6 Prometheus scrape jobs are `up` (wait ~60 seconds after startup):**
+
+```bash
+docker compose -f docker-compose.example.yml exec prometheus \
+  wget -qO- http://localhost:9090/api/v1/targets \
+  | grep -o '"job":"avi_[^"]*"\|"health":"[^"]*"'
+```
+
+You should see all 6 jobs (`avi_controller`, `avi_serviceengine`, `avi_serviceengine_interfaces`, `avi_inventory`, `avi_virtualservice`, `avi_pool`) reporting `"health":"up"`.
+
+**3. Open Grafana:**
+- Browse to `http://<your-docker-host>:3000`
+- Sign in (`admin` / `admin` unless changed in Step 4)
+- Navigate to **Dashboards → Avi Load Balancer → Avi — Summary (Overview)**
+
+---
+
+### `avi-exporter` Environment Variables Reference
+
+| Variable | Required | Default | Description |
+| :--- | :---: | :--- | :--- |
+| `AVI_CONTROLLER` | **Yes** | *(none)* | Avi Controller FQDN or IP (optionally `host:port` if non-443). Must match TLS cert SAN. |
+| `AVI_USERNAME` | **Yes** | *(none)* | Dedicated read-only Avi Controller username (set in `secrets/avi-exporter.env`). |
+| `AVI_PASSWORD` | **Yes** | *(none)* | Read-only Avi Controller password (set in `secrets/avi-exporter.env`). |
+| `AVI_API_VERSION` | No | `32.1.4` | Sent as `X-Avi-Version` header. Set to match your Controller version (`>= 30.2.1` on Avi 32.1.4+). |
+| `AVI_TENANT` | No | `admin` | Default `X-Avi-Tenant` when `?tenant=` query param is omitted. |
+| `AVI_CA_FILE` | No | *(system CA)* | Path inside container to PEM CA bundle (e.g. `/etc/ssl/certs/corp-root-ca.pem`). Leave unset for public CAs. |
+| `AVI_EXPORTER_PORT` | No | `9103` | Internal HTTP listen port (kept private on the Docker `monitoring` network). |
+| `AVI_CACHE_TTL` | No | `20` | In-memory response cache duration (seconds) per `(entity, tenant)`. |
+| `AVI_TIMEOUT` | No | `40` | Upstream HTTPS request timeout (seconds) to the Avi Controller. |
+
+---
+
+### Troubleshooting Common First-Run Errors
+
+- **`Avi login failed with HTTP 401`:** Verify `AVI_USERNAME` and `AVI_PASSWORD` in `secrets/avi-exporter.env`, and confirm there are **no quotes** around the values.
+- **`Avi GET ... failed with HTTP 403`:** The Avi user lacks read permission for that endpoint—assign the built-in **`System-Read-Access`** role in **Administration → Accounts → Users**.
+- **`SSLCertVerificationError` / `CERTIFICATE_VERIFY_FAILED`:** Either `certs/corp-root-ca.pem` does not contain the CA that signed your Controller's portal cert, or `AVI_CONTROLLER` does not match a DNS/IP SAN in that certificate. Re-test with the `openssl s_client` command in Step 3.
+- **`Avi GET ... failed with HTTP 400`:** Update `AVI_API_VERSION` in `docker-compose.example.yml` to match your Avi Controller's running version.
+- **Grafana shows `No data` right after startup:** Wait 60–90 seconds for Prometheus's first 1-minute scrape cycle, verify all 6 targets are `"health":"up"`, and confirm the **Prometheus**, **Controller**, and **Tenant** dropdowns at the top of the dashboard are populated.
+
+---
+
 ## Included Grafana 11–13 Dashboards (`dashboards/`)
 
 All 9 dashboards are generated reproducibly by [`scripts/build_avi_dashboards.py`](scripts/build_avi_dashboards.py) with a dynamic **`Prometheus` (`${datasource}`) variable** — no hardcoded datasource UIDs!
@@ -66,38 +243,20 @@ All 9 dashboards are generated reproducibly by [`scripts/build_avi_dashboards.py
 
 ---
 
-## Quick Start (Docker Compose)
+## Importing Dashboards into an Existing Grafana / Prometheus Stack
 
-```bash
-git clone https://github.com/mitchchen/avi-prometheus-grafana.git
-cd avi-prometheus-grafana
+Already running Prometheus and Grafana? You don't need the full Docker Compose stack:
 
-# 1. Configure a dedicated read-only Avi Controller user
-mkdir -p secrets certs
-cp .env.example secrets/avi-exporter.env
-chmod 600 secrets/avi-exporter.env
-# Edit secrets/avi-exporter.env with your read-only AVI_USERNAME / AVI_PASSWORD
+1. **Run only `avi-exporter`** (either the `avi-exporter` service block from `docker-compose.example.yml` or Kubernetes [`k8s/avi-exporter.yaml`](k8s/avi-exporter.yaml)).
+2. **Add the 6 scrape jobs** from [`prometheus/prometheus-avi.yml`](prometheus/prometheus-avi.yml) into your existing Prometheus configuration and reload Prometheus.
+3. **Import the 9 dashboards into Grafana:**
+   - **Option A — Grafana UI (1-Click Import):** Go to **Dashboards → New → Import → Upload dashboard JSON file** and upload the files from `dashboards/`. Pick your existing Prometheus datasource in the top **Prometheus** dropdown.
+   - **Option B — File / GitOps Provisioning:** Copy `dashboards/*.json` to `/var/lib/grafana/dashboards-avi` and drop [`grafana/provisioning/dashboards/avi-dashboards.yml`](grafana/provisioning/dashboards/avi-dashboards.yml) into `/etc/grafana/provisioning/dashboards/`.
+4. *(Optional)* **Add Proactive Alerts:** Copy [`alerting/avi-alert-rules.yml`](alerting/avi-alert-rules.yml) into `/etc/grafana/provisioning/alerting/` and update `datasourceUid: prometheus` to match your Prometheus datasource UID.
 
-# 2. Place your enterprise/internal root CA bundle (or omit AVI_CA_FILE for public CA)
-cp /path/to/your-root-ca.pem certs/corp-root-ca.pem
-
-# 3. Update AVI_CONTROLLER & AVI_API_VERSION in docker-compose.example.yml
-#    and friendly instance name in prometheus/prometheus-avi.yml
-
-# 4. Launch avi-exporter + Prometheus + Grafana (all 9 dashboards auto-provisioned!)
-docker compose -f docker-compose.example.yml up -d
-```
-
-Open Grafana at `http://localhost:3000` → **Dashboards → Avi Load Balancer → Avi — Summary (Overview)**.
-
-### Importing Dashboards into an Existing Grafana Instance
-
-- **Option A — Grafana UI (1-Click Import):** Go to **Dashboards → New → Import → Upload dashboard JSON file** and upload any file from `dashboards/`. Pick your existing Prometheus datasource in the top **Prometheus** dropdown.
-- **Option B — File / GitOps Provisioning:** Copy `dashboards/*.json` to `/var/lib/grafana/dashboards-avi` and drop [`grafana/provisioning/dashboards/avi-dashboards.yml`](grafana/provisioning/dashboards/avi-dashboards.yml) into `/etc/grafana/provisioning/dashboards/`.
-
-### Kubernetes Deployment
-
-See [`k8s/avi-exporter.yaml`](k8s/avi-exporter.yaml) for a ready-to-apply `Deployment`, internal `ClusterIP` `Service`, and Prometheus Operator `ServiceMonitor`.
+### Multi-Controller & Multi-Tenant Scaling
+- **Multiple Avi Tenants on one Controller:** Duplicate the tenant-scoped jobs in `prometheus/prometheus-avi.yml` with different `params.tenant` values (e.g., `tenant: ['app-team-a']`). All tenants appear automatically in Grafana's **Tenant** dropdown.
+- **Multiple Avi Controllers:** Run one lightweight `avi-exporter` container per Controller (each with its own `AVI_CONTROLLER` and `env_file`), and set a unique `replacement:` value under `metric_relabel_configs` in Prometheus (e.g., `avi-prod-west`, `avi-prod-east`). All Controllers appear in Grafana's **Controller** dropdown.
 
 ---
 
