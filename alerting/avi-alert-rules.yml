@@ -155,7 +155,7 @@ groups:
             relativeTimeRange: { from: 300, to: 0 }
             datasourceUid: prometheus
             model:
-              expr: 'count by (instance) (avi_healthscore_health_score_value{type="serviceengine"} >= 80) or vector(0)'
+              expr: 'count by (instance) (avi_healthscore_health_score_value{type="serviceengine"} >= 80) or (0 * max by (instance) (avi_se_total_count))'
               instant: true
               refId: A
           - refId: B
@@ -223,7 +223,7 @@ groups:
             relativeTimeRange: { from: 600, to: 0 }
             datasourceUid: prometheus
             model:
-              expr: 'max by (instance, name) (avi_se_stats_avg_mem_usage{type="serviceengine"} or avi_se_stats_avg_connection_mem_usage{type="serviceengine"})'
+              expr: 'max by (instance, name) ({__name__=~"avi_se_stats_avg_(mem|connection_mem)_usage", type="serviceengine"})'
               instant: true
               refId: A
           - refId: B
